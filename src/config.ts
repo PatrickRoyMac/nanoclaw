@@ -43,6 +43,16 @@ export const DATA_DIR = path.resolve(PROJECT_ROOT, 'data');
 
 export const CONTAINER_IMAGE =
   process.env.CONTAINER_IMAGE || 'nanoclaw-agent:latest';
+// When true, containers use --network=host (full host network access, including home
+// network, Tailscale, etc.). Replaces the --add-host bridge workaround on Linux.
+export const CONTAINER_HOST_NETWORK =
+  process.env.CONTAINER_HOST_NETWORK === 'true';
+
+// Port on the host to map to container port 3000 so agents can serve a website
+// accessible from the home network. Set to e.g. 8080. Leave unset to disable.
+export const CONTAINER_WEB_PORT = process.env.CONTAINER_WEB_PORT
+  ? parseInt(process.env.CONTAINER_WEB_PORT, 10)
+  : null;
 export const CONTAINER_TIMEOUT = parseInt(
   process.env.CONTAINER_TIMEOUT || '1800000',
   10,

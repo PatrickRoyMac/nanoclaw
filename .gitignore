@@ -36,3 +36,7 @@ groups/global/*
 .nanoclaw/
 
 agents-sdk-docs
+groups/global/postgres.env
+.ssh/
+*.deb
+*.bak

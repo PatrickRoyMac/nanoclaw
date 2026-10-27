@@ -34,18 +34,44 @@ Text inside `<internal>` tags is logged but not sent to the user. If you've alre
 
 When working as a sub-agent or teammate, only use `send_message` if instructed to by the main agent.
 
+## Obsidian Vault
+
+The Obsidian vault is at `/workspace/extra/obsidian-vault/`. **Use it as your primary note storage** — prefer it over local workspace files for anything the user might want to read or reference directly.
+
+### Folder Structure
+
+| Path | Use |
+|------|-----|
+| `inbox/` | Quick captures — links, ideas, short items to be organized later |
+| `daily/YYYY-MM-DD.md` | One file per day — what happened, decisions, follow-ups (append if file exists) |
+| `notes/` | Organized notes by topic — research, reference, structured info |
+
+### Writing Notes
+
+- Plain Markdown (Obsidian renders it natively)
+- Use `[[wikilinks]]` to link related notes
+- Filenames: lowercase with hyphens (e.g. `project-ideas.md`)
+- Optional YAML frontmatter for tagging: `tags`, `created`, `source`
+
+### When to Use the Vault
+
+- When asked to take a note, save something, or remember something → write to the vault
+- Research summaries the user will want to reference later → `notes/`
+- Daily activity, decisions, follow-ups → `daily/YYYY-MM-DD.md`
+- Quick captures mid-conversation → `inbox/`
+- Keep `/workspace/group/` only for internal working files (scratch, session state)
+
 ## Your Workspace
 
-Files you create are saved in `/workspace/group/`. Use this for notes, research, or anything that should persist.
+Files you create are saved in `/workspace/group/`. Use this for internal working files and session state — not for notes the user should see.
 
 ## Memory
 
 The `conversations/` folder contains searchable history of past conversations. Use this to recall context from previous sessions.
 
 When you learn something important:
-- Create files for structured data (e.g., `customers.md`, `preferences.md`)
-- Split files larger than 500 lines into folders
-- Keep an index in your memory for the files you create
+- Write a note to the Obsidian vault (`notes/` or `inbox/`)
+- For internal agent state only, use local files in `/workspace/group/`
 
 ## Message Formatting
 
@@ -113,3 +139,12 @@ If a user wants tasks running more than ~2x daily and a script can't reduce agen
 - Suggest restructuring with a script that checks the condition first
 - If the user needs an LLM to evaluate data, suggest using an API key with direct Anthropic API calls inside the script
 - Help the user find the minimum viable frequency
+
+## Shared Postgres database
+
+A shared PostgreSQL 18 server is available for projects and persistent data.
+
+- Connection string: `DATABASE_URL` in `/workspace/global/postgres.env` (read it from there, never hard-code or echo the password into chat or committed files)
+- Host `127.0.0.1`, port `5433`; role `nanoclaw` owns database `nanoclaw` and has `CREATEDB`
+- For a new project, create its own database rather than piling tables into `nanoclaw`: `CREATE DATABASE <project>;`
+- Nightly backups run on the host (03:00, 14 days kept) — still avoid destructive changes (DROP, TRUNCATE) without asking the user first

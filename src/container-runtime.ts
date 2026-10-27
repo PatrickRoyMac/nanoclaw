@@ -5,6 +5,7 @@
 import { execSync } from 'child_process';
 import os from 'os';
 
+import { CONTAINER_HOST_NETWORK } from './config.js';
 import { logger } from './logger.js';
 
 /** The container runtime binary name. */
@@ -12,6 +13,12 @@ export const CONTAINER_RUNTIME_BIN = 'docker';
 
 /** CLI args needed for the container to resolve the host gateway. */
 export function hostGatewayArgs(): string[] {
+  if (CONTAINER_HOST_NETWORK) {
+    // --network=host shares the host network stack directly — container sees
+    // the home network, Tailscale, and all host interfaces. --add-host is
+    // incompatible with host networking so we skip it.
+    return ['--network=host'];
+  }
   // On Linux, host.docker.internal isn't built-in — add it explicitly
   if (os.platform() === 'linux') {
     return ['--add-host=host.docker.internal:host-gateway'];

@@ -7,6 +7,7 @@ import {
   ASSISTANT_NAME,
   DEFAULT_TRIGGER,
   getTriggerPattern,
+  DATA_DIR,
   GROUPS_DIR,
   IDLE_TIMEOUT,
   MAX_MESSAGES_PER_PROMPT,
@@ -41,6 +42,7 @@ import {
   initDatabase,
   setRegisteredGroup,
   setRouterState,
+  deleteSession,
   setSession,
   storeChatMetadata,
   storeMessage,
@@ -60,6 +62,10 @@ import {
   loadSenderAllowlist,
   shouldDropMessage,
 } from './sender-allowlist.js';
+import {
+  startHostCommandProxy,
+  stopHostCommandProxy,
+} from './host-command-proxy.js';
 import { startSchedulerLoop } from './task-scheduler.js';
 import { Channel, NewMessage, RegisteredGroup } from './types.js';
 import { logger } from './logger.js';
@@ -402,6 +408,17 @@ async function runAgent(
     }
 
     if (output.status === 'error') {
+      // If the session ID is no longer known to Claude Code (e.g. after a
+      // container rebuild or session expiry), retrying with the same stale ID
+      // will fail every time. Clear it so the next attempt starts fresh.
+      if (output.error?.includes('No conversation found')) {
+        logger.warn(
+          { group: group.name, sessionId },
+          'Clearing stale session ID after not-found error',
+        );
+        delete sessions[group.folder];
+        deleteSession(group.folder);
+      }
       logger.error(
         { group: group.name, error: output.error },
         'Container agent error',
@@ -500,7 +517,6 @@ async function startMessageLoop(): Promise<void> {
             lastAgentTimestamp[chatJid] =
               messagesToSend[messagesToSend.length - 1].timestamp;
             saveState();
-            // Show typing indicator while the container processes the piped message
             channel
               .setTyping?.(chatJid, true)
               ?.catch((err) =>
@@ -541,12 +557,79 @@ function recoverPendingMessages(): void {
   }
 }
 
+// --- Process lockfile to prevent duplicate instances ---
+const LOCKFILE_PATH = path.join(DATA_DIR, 'nanoclaw.pid');
+
+function isNanoClawRunning(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+  } catch {
+    return false;
+  }
+  // PIDs get reused after a reboot, so a live PID alone isn't proof.
+  // On Linux, confirm it's a node process running from this project dir.
+  try {
+    const cwd = fs.readlinkSync(`/proc/${pid}/cwd`);
+    const cmdline = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf-8');
+    return cwd === process.cwd() && cmdline.includes('node');
+  } catch {
+    // No /proc (e.g. macOS) — fall back to the existence check
+    return true;
+  }
+}
+
+function exitDuplicate(existingPid: number): never {
+  logger.fatal(
+    { existingPid, currentPid: process.pid },
+    'Another NanoClaw instance is already running. Exiting to prevent double messages.',
+  );
+  process.exit(1);
+}
+
+function acquireLock(): void {
+  if (fs.existsSync(LOCKFILE_PATH)) {
+    const existingPid = parseInt(fs.readFileSync(LOCKFILE_PATH, 'utf-8').trim(), 10);
+    if (!isNaN(existingPid) && isNanoClawRunning(existingPid)) {
+      exitDuplicate(existingPid);
+    }
+    logger.warn(
+      { existingPid },
+      'Stale lockfile found (process not running), taking over',
+    );
+    fs.rmSync(LOCKFILE_PATH, { force: true });
+  }
+  fs.mkdirSync(path.dirname(LOCKFILE_PATH), { recursive: true });
+  try {
+    // Exclusive create so two instances starting at once can't both win
+    fs.writeFileSync(LOCKFILE_PATH, String(process.pid), { flag: 'wx' });
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
+    exitDuplicate(parseInt(fs.readFileSync(LOCKFILE_PATH, 'utf-8').trim(), 10));
+  }
+  logger.info({ pid: process.pid }, 'Process lock acquired');
+}
+
+function releaseLock(): void {
+  try {
+    if (fs.existsSync(LOCKFILE_PATH)) {
+      const pid = parseInt(fs.readFileSync(LOCKFILE_PATH, 'utf-8').trim(), 10);
+      if (pid === process.pid) {
+        fs.unlinkSync(LOCKFILE_PATH);
+      }
+    }
+  } catch {
+    // Best-effort cleanup
+  }
+}
+
 function ensureContainerSystemRunning(): void {
   ensureContainerRuntimeRunning();
   cleanupOrphans();
+  startHostCommandProxy();
 }
 
 async function main(): Promise<void> {
+  acquireLock();
   ensureContainerSystemRunning();
   initDatabase();
   logger.info('Database initialized');
@@ -563,6 +646,8 @@ async function main(): Promise<void> {
   // Graceful shutdown handlers
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'Shutdown signal received');
+    releaseLock();
+    stopHostCommandProxy();
     await queue.shutdown(10000);
     for (const ch of channels) await ch.disconnect();
     process.exit(0);

@@ -1,3 +1,9 @@
+import { execSync } from 'child_process';
+import * as fs from 'fs';
+import * as https from 'https';
+import * as http from 'http';
+import * as os from 'os';
+import * as path from 'path';
 import { Client, Events, GatewayIntentBits, Message, TextChannel } from 'discord.js';
 
 import { ASSISTANT_NAME, TRIGGER_PATTERN } from '../config.js';
@@ -15,6 +21,54 @@ export interface DiscordChannelOpts {
   onMessage: OnInboundMessage;
   onChatMetadata: OnChatMetadata;
   registeredGroups: () => Record<string, RegisteredGroup>;
+}
+
+/** Download a URL to a temp file and return the local path */
+async function downloadToTemp(url: string, filename: string): Promise<string> {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nanoclaw-audio-'));
+  const dest = path.join(tmpDir, filename);
+  const proto = url.startsWith('https') ? https : http;
+
+  return new Promise((resolve, reject) => {
+    const file = fs.createWriteStream(dest);
+    proto.get(url, (res) => {
+      if (res.statusCode !== 200) {
+        reject(new Error(`Download failed: HTTP ${res.statusCode} for ${url}`));
+        return;
+      }
+      res.pipe(file);
+      file.on('finish', () => {
+        file.close();
+        resolve(dest);
+      });
+    }).on('error', reject);
+  });
+}
+
+/** Transcribe an audio file using Whisper. Returns transcription text. */
+async function transcribeWithWhisper(url: string, filename: string): Promise<string> {
+  const localPath = await downloadToTemp(url, filename);
+  const outDir = path.dirname(localPath);
+  const baseName = path.basename(localPath, path.extname(localPath));
+  const txtPath = path.join(outDir, `${baseName}.txt`);
+
+  try {
+    execSync(
+      `whisper "${localPath}" --model base --output_format txt --output_dir "${outDir}" --language en 2>/dev/null`,
+      { timeout: 120000 }
+    );
+    if (fs.existsSync(txtPath)) {
+      const text = fs.readFileSync(txtPath, 'utf8').trim();
+      return text;
+    }
+    return '[Transcription failed: no output]';
+  } catch (err: any) {
+    logger.error({ err: err.message }, 'Whisper transcription failed');
+    return `[Transcription failed: ${err.message?.slice(0, 100)}]`;
+  } finally {
+    // Cleanup temp files
+    try { fs.rmSync(path.dirname(localPath), { recursive: true, force: true }); } catch {}
+  }
 }
 
 export class DiscordChannel implements Channel {
@@ -64,9 +118,6 @@ export class DiscordChannel implements Channel {
       }
 
       // Translate Discord @bot mentions into TRIGGER_PATTERN format.
-      // Discord mentions look like <@botUserId> — these won't match
-      // TRIGGER_PATTERN (e.g., ^@Andy\b), so we prepend the trigger
-      // when the bot is @mentioned.
       if (this.client?.user) {
         const botId = this.client.user.id;
         const isBotMentioned =
@@ -75,31 +126,34 @@ export class DiscordChannel implements Channel {
           content.includes(`<@!${botId}>`);
 
         if (isBotMentioned) {
-          // Strip the <@botId> mention to avoid visual clutter
           content = content
             .replace(new RegExp(`<@!?${botId}>`, 'g'), '')
             .trim();
-          // Prepend trigger if not already present
           if (!TRIGGER_PATTERN.test(content)) {
             content = `@${ASSISTANT_NAME} ${content}`;
           }
         }
       }
 
-      // Handle attachments — store placeholders so the agent knows something was sent
+      // Handle attachments
       if (message.attachments.size > 0) {
-        const attachmentDescriptions = [...message.attachments.values()].map((att) => {
-          const contentType = att.contentType || '';
-          if (contentType.startsWith('image/')) {
-            return `[Image: ${att.name || 'image'}]`;
-          } else if (contentType.startsWith('video/')) {
-            return `[Video: ${att.name || 'video'}]`;
-          } else if (contentType.startsWith('audio/')) {
-            return `[Audio: ${att.name || 'audio'}]`;
-          } else {
-            return `[File: ${att.name || 'file'}]`;
-          }
-        });
+        const attachmentDescriptions = await Promise.all(
+          [...message.attachments.values()].map(async (att) => {
+            const contentType = att.contentType || '';
+            if (contentType.startsWith('audio/')) {
+              // Transcribe voice messages with Whisper immediately
+              logger.info({ filename: att.name, url: att.url }, 'Transcribing audio attachment with Whisper');
+              const transcription = await transcribeWithWhisper(att.url, att.name || 'audio.ogg');
+              return `[Voice message transcription: ${transcription}]`;
+            } else if (contentType.startsWith('image/')) {
+              return `[Image: ${att.name || "image"}](${att.url})`;
+            } else if (contentType.startsWith('video/')) {
+              return `[Video: ${att.name || "video"}](${att.url})`;
+            } else {
+              return `[File: ${att.name || "file"}](${att.url})`;
+            }
+          })
+        );
         if (content) {
           content = `${content}\n${attachmentDescriptions.join('\n')}`;
         } else {
@@ -107,7 +161,7 @@ export class DiscordChannel implements Channel {
         }
       }
 
-      // Handle reply context — include who the user is replying to
+      // Handle reply context
       if (message.reference?.messageId) {
         try {
           const repliedTo = await message.channel.messages.fetch(
@@ -137,7 +191,7 @@ export class DiscordChannel implements Channel {
         return;
       }
 
-      // Deliver message — startMessageLoop() will pick it up
+      // Deliver message
       this.opts.onMessage(chatJid, {
         id: msgId,
         chat_jid: chatJid,
@@ -193,7 +247,6 @@ export class DiscordChannel implements Channel {
 
       const textChannel = channel as TextChannel;
 
-      // Discord has a 2000 character limit per message — split if needed
       const MAX_LENGTH = 2000;
       if (text.length <= MAX_LENGTH) {
         await textChannel.send(text);

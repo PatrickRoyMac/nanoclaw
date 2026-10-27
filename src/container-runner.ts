@@ -7,15 +7,19 @@ import fs from 'fs';
 import path from 'path';
 
 import {
+  CONTAINER_HOST_NETWORK,
   CONTAINER_IMAGE,
   CONTAINER_MAX_OUTPUT_SIZE,
   CONTAINER_TIMEOUT,
+  CONTAINER_WEB_PORT,
   DATA_DIR,
   GROUPS_DIR,
   IDLE_TIMEOUT,
   ONECLI_URL,
   TIMEZONE,
 } from './config.js';
+import os from 'os';
+import { HOST_CMD_SOCKET_PATH } from './host-command-proxy.js';
 import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
 import { logger } from './logger.js';
 import {
@@ -27,6 +31,20 @@ import {
 import { OneCLI } from '@onecli-sh/sdk';
 import { validateAdditionalMounts } from './mount-security.js';
 import { RegisteredGroup } from './types.js';
+
+/**
+ * Create an IPC directory and ensure it is writable by the container's
+ * node user (uid 1000).  When the host runs as root the default umask
+ * produces 755 directories that the container cannot write to.
+ */
+function ensureIpcDir(dir: string): void {
+  fs.mkdirSync(dir, { recursive: true });
+  try {
+    fs.chmodSync(dir, 0o777);
+  } catch {
+    // Best-effort — may fail on read-only mounts
+  }
+}
 
 const onecli = new OneCLI({ url: ONECLI_URL });
 
@@ -168,9 +186,10 @@ function buildVolumeMounts(
   // Per-group IPC namespace: each group gets its own IPC directory
   // This prevents cross-group privilege escalation via IPC
   const groupIpcDir = resolveGroupIpcPath(group.folder);
-  fs.mkdirSync(path.join(groupIpcDir, 'messages'), { recursive: true });
-  fs.mkdirSync(path.join(groupIpcDir, 'tasks'), { recursive: true });
-  fs.mkdirSync(path.join(groupIpcDir, 'input'), { recursive: true });
+  ensureIpcDir(groupIpcDir);
+  ensureIpcDir(path.join(groupIpcDir, 'messages'));
+  ensureIpcDir(path.join(groupIpcDir, 'tasks'));
+  ensureIpcDir(path.join(groupIpcDir, 'input'));
   mounts.push({
     hostPath: groupIpcDir,
     containerPath: '/workspace/ipc',
@@ -220,6 +239,45 @@ function buildVolumeMounts(
     mounts.push(...validatedMounts);
   }
 
+  // Mount host gh binary and config so the container uses the host's authenticated
+  // gh CLI rather than any version installed inside the image.
+  const hostGhBin = '/usr/bin/gh';
+  const hostGhConfig = path.join(os.homedir(), '.config', 'gh');
+  if (fs.existsSync(hostGhBin)) {
+    mounts.push({
+      hostPath: hostGhBin,
+      containerPath: '/usr/local/bin/gh',
+      readonly: true,
+    });
+  }
+  if (fs.existsSync(hostGhConfig)) {
+    mounts.push({
+      hostPath: hostGhConfig,
+      containerPath: '/home/node/.config/gh',
+      readonly: true,
+    });
+  }
+
+  // Host command proxy socket — lets containers run commands on the host machine.
+  // Socket is created by startHostCommandProxy() on startup.
+  if (fs.existsSync(HOST_CMD_SOCKET_PATH)) {
+    mounts.push({
+      hostPath: HOST_CMD_SOCKET_PATH,
+      containerPath: '/host/cmd.sock',
+      readonly: false,
+    });
+  }
+
+  // host-cmd client script — the CLI wrapper containers use to talk to the proxy.
+  const hostCmdScript = path.join(process.cwd(), 'container', 'host-cmd');
+  if (fs.existsSync(hostCmdScript)) {
+    mounts.push({
+      hostPath: hostCmdScript,
+      containerPath: '/usr/local/bin/host-cmd',
+      readonly: true,
+    });
+  }
+
   return mounts;
 }
 
@@ -267,6 +325,13 @@ async function buildContainerArgs(
     } else {
       args.push('-v', `${mount.hostPath}:${mount.containerPath}`);
     }
+  }
+
+  // Expose a web port so agents can serve a website accessible from the home
+  // network. With --network=host the port is already shared; only add -p for
+  // bridge networking.
+  if (CONTAINER_WEB_PORT && !CONTAINER_HOST_NETWORK) {
+    args.push('-p', `${CONTAINER_WEB_PORT}:3000`);
   }
 
   args.push(CONTAINER_IMAGE);
@@ -686,7 +751,7 @@ export function writeTasksSnapshot(
 ): void {
   // Write filtered tasks to the group's IPC directory
   const groupIpcDir = resolveGroupIpcPath(groupFolder);
-  fs.mkdirSync(groupIpcDir, { recursive: true });
+  ensureIpcDir(groupIpcDir);
 
   // Main sees all tasks, others only see their own
   const filteredTasks = isMain
@@ -716,7 +781,7 @@ export function writeGroupsSnapshot(
   _registeredJids: Set<string>,
 ): void {
   const groupIpcDir = resolveGroupIpcPath(groupFolder);
-  fs.mkdirSync(groupIpcDir, { recursive: true });
+  ensureIpcDir(groupIpcDir);
 
   // Main sees all groups; others see nothing (they can't activate groups)
   const visibleGroups = isMain ? groups : [];

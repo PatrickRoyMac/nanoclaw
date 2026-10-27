@@ -1,0 +1,49 @@
+#!/usr/bin/env node
+/**
+ * host-cmd — run a command on the NanoClaw host machine
+ *
+ * Usage: host-cmd <command...>
+ *
+ * Examples:
+ *   host-cmd hostname
+ *   host-cmd df -h
+ *   host-cmd tailscale status
+ *   host-cmd systemctl status nanoclaw
+ */
+'use strict';
+const net = require('net');
+
+const cmd = process.argv.slice(2).join(' ');
+if (!cmd) {
+  process.stderr.write('Usage: host-cmd <command>\n');
+  process.exit(1);
+}
+
+const SOCKET = '/host/cmd.sock';
+const socket = net.createConnection(SOCKET);
+let data = '';
+
+socket.on('connect', () => {
+  socket.write(JSON.stringify({ cmd, timeout: 30000 }));
+  socket.end();
+});
+
+socket.on('data', (chunk) => { data += chunk; });
+
+socket.on('end', () => {
+  let r;
+  try {
+    r = JSON.parse(data);
+  } catch (e) {
+    process.stderr.write('host-cmd: failed to parse response\n');
+    process.exit(1);
+  }
+  if (r.stdout) process.stdout.write(r.stdout);
+  if (r.stderr) process.stderr.write(r.stderr);
+  process.exit(r.exitCode ?? 0);
+});
+
+socket.on('error', (err) => {
+  process.stderr.write(`host-cmd: ${err.message}\n`);
+  process.exit(1);
+});
