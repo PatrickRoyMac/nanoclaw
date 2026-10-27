@@ -4,7 +4,13 @@ import * as https from 'https';
 import * as http from 'http';
 import * as os from 'os';
 import * as path from 'path';
-import { Client, Events, GatewayIntentBits, Message, TextChannel } from 'discord.js';
+import {
+  Client,
+  Events,
+  GatewayIntentBits,
+  Message,
+  TextChannel,
+} from 'discord.js';
 
 import { ASSISTANT_NAME, TRIGGER_PATTERN } from '../config.js';
 import { readEnvFile } from '../env.js';
@@ -31,22 +37,29 @@ async function downloadToTemp(url: string, filename: string): Promise<string> {
 
   return new Promise((resolve, reject) => {
     const file = fs.createWriteStream(dest);
-    proto.get(url, (res) => {
-      if (res.statusCode !== 200) {
-        reject(new Error(`Download failed: HTTP ${res.statusCode} for ${url}`));
-        return;
-      }
-      res.pipe(file);
-      file.on('finish', () => {
-        file.close();
-        resolve(dest);
-      });
-    }).on('error', reject);
+    proto
+      .get(url, (res) => {
+        if (res.statusCode !== 200) {
+          reject(
+            new Error(`Download failed: HTTP ${res.statusCode} for ${url}`),
+          );
+          return;
+        }
+        res.pipe(file);
+        file.on('finish', () => {
+          file.close();
+          resolve(dest);
+        });
+      })
+      .on('error', reject);
   });
 }
 
 /** Transcribe an audio file using Whisper. Returns transcription text. */
-async function transcribeWithWhisper(url: string, filename: string): Promise<string> {
+async function transcribeWithWhisper(
+  url: string,
+  filename: string,
+): Promise<string> {
   const localPath = await downloadToTemp(url, filename);
   const outDir = path.dirname(localPath);
   const baseName = path.basename(localPath, path.extname(localPath));
@@ -55,7 +68,7 @@ async function transcribeWithWhisper(url: string, filename: string): Promise<str
   try {
     execSync(
       `whisper "${localPath}" --model base --output_format txt --output_dir "${outDir}" --language en 2>/dev/null`,
-      { timeout: 120000 }
+      { timeout: 120000 },
     );
     if (fs.existsSync(txtPath)) {
       const text = fs.readFileSync(txtPath, 'utf8').trim();
@@ -67,7 +80,9 @@ async function transcribeWithWhisper(url: string, filename: string): Promise<str
     return `[Transcription failed: ${err.message?.slice(0, 100)}]`;
   } finally {
     // Cleanup temp files
-    try { fs.rmSync(path.dirname(localPath), { recursive: true, force: true }); } catch {}
+    try {
+      fs.rmSync(path.dirname(localPath), { recursive: true, force: true });
+    } catch {}
   }
 }
 
@@ -142,17 +157,23 @@ export class DiscordChannel implements Channel {
             const contentType = att.contentType || '';
             if (contentType.startsWith('audio/')) {
               // Transcribe voice messages with Whisper immediately
-              logger.info({ filename: att.name, url: att.url }, 'Transcribing audio attachment with Whisper');
-              const transcription = await transcribeWithWhisper(att.url, att.name || 'audio.ogg');
+              logger.info(
+                { filename: att.name, url: att.url },
+                'Transcribing audio attachment with Whisper',
+              );
+              const transcription = await transcribeWithWhisper(
+                att.url,
+                att.name || 'audio.ogg',
+              );
               return `[Voice message transcription: ${transcription}]`;
             } else if (contentType.startsWith('image/')) {
-              return `[Image: ${att.name || "image"}](${att.url})`;
+              return `[Image: ${att.name || 'image'}](${att.url})`;
             } else if (contentType.startsWith('video/')) {
-              return `[Video: ${att.name || "video"}](${att.url})`;
+              return `[Video: ${att.name || 'video'}](${att.url})`;
             } else {
-              return `[File: ${att.name || "file"}](${att.url})`;
+              return `[File: ${att.name || 'file'}](${att.url})`;
             }
-          })
+          }),
         );
         if (content) {
           content = `${content}\n${attachmentDescriptions.join('\n')}`;
@@ -179,7 +200,13 @@ export class DiscordChannel implements Channel {
 
       // Store chat metadata for discovery
       const isGroup = message.guild !== null;
-      this.opts.onChatMetadata(chatJid, timestamp, chatName, 'discord', isGroup);
+      this.opts.onChatMetadata(
+        chatJid,
+        timestamp,
+        chatName,
+        'discord',
+        isGroup,
+      );
 
       // Only deliver full message for registered groups
       const group = this.opts.registeredGroups()[chatJid];

@@ -52,7 +52,11 @@ export function startHostCommandProxy(): void {
       try {
         req = JSON.parse(raw);
       } catch {
-        const err: CmdResponse = { stdout: '', stderr: 'Invalid JSON request', exitCode: 1 };
+        const err: CmdResponse = {
+          stdout: '',
+          stderr: 'Invalid JSON request',
+          exitCode: 1,
+        };
         socket.write(JSON.stringify(err));
         socket.end();
         return;
@@ -60,7 +64,11 @@ export function startHostCommandProxy(): void {
 
       const cmd = String(req.cmd || '').trim();
       if (!cmd) {
-        const err: CmdResponse = { stdout: '', stderr: 'Empty command', exitCode: 1 };
+        const err: CmdResponse = {
+          stdout: '',
+          stderr: 'Empty command',
+          exitCode: 1,
+        };
         socket.write(JSON.stringify(err));
         socket.end();
         return;
@@ -70,15 +78,19 @@ export function startHostCommandProxy(): void {
 
       logger.info({ cmd }, 'Host command proxy: executing');
 
-      exec(cmd, { timeout, maxBuffer: MAX_OUTPUT_BYTES, shell: '/bin/bash' }, (err, stdout, stderr) => {
-        const exitCode = err?.code ?? (err ? 1 : 0);
-        if (exitCode !== 0) {
-          logger.warn({ cmd, exitCode }, 'Host command proxy: non-zero exit');
-        }
-        const response: CmdResponse = { stdout, stderr, exitCode };
-        socket.write(JSON.stringify(response));
-        socket.end();
-      });
+      exec(
+        cmd,
+        { timeout, maxBuffer: MAX_OUTPUT_BYTES, shell: '/bin/bash' },
+        (err, stdout, stderr) => {
+          const exitCode = err?.code ?? (err ? 1 : 0);
+          if (exitCode !== 0) {
+            logger.warn({ cmd, exitCode }, 'Host command proxy: non-zero exit');
+          }
+          const response: CmdResponse = { stdout, stderr, exitCode };
+          socket.write(JSON.stringify(response));
+          socket.end();
+        },
+      );
     });
 
     socket.on('error', (err) => {
@@ -89,7 +101,10 @@ export function startHostCommandProxy(): void {
   server.listen(HOST_CMD_SOCKET_PATH, () => {
     // Allow the container's node user (uid 1000) to connect
     fs.chmodSync(HOST_CMD_SOCKET_PATH, 0o777);
-    logger.info({ socketPath: HOST_CMD_SOCKET_PATH }, 'Host command proxy started');
+    logger.info(
+      { socketPath: HOST_CMD_SOCKET_PATH },
+      'Host command proxy started',
+    );
   });
 
   server.on('error', (err) => {

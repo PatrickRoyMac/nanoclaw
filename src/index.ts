@@ -588,7 +588,10 @@ function exitDuplicate(existingPid: number): never {
 
 function acquireLock(): void {
   if (fs.existsSync(LOCKFILE_PATH)) {
-    const existingPid = parseInt(fs.readFileSync(LOCKFILE_PATH, 'utf-8').trim(), 10);
+    const existingPid = parseInt(
+      fs.readFileSync(LOCKFILE_PATH, 'utf-8').trim(),
+      10,
+    );
     if (!isNaN(existingPid) && isNanoClawRunning(existingPid)) {
       exitDuplicate(existingPid);
     }
